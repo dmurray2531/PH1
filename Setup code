@@ -1,0 +1,144 @@
+/**************************************************************************
+ This is code for the pool heater. 
+
+ This pool heater is designed to have copper tubing going through a hot fire.
+ Temperature inputs for the water inlet, and exiting water temp going into the
+ pool. 
+ a motor PWM motor controller that changes the speed of a 12v pump. 
+ and a pot for manual control
+
+ by Dillan Murray
+ 7.16.24
+
+
+ **************************************************************************/
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Servo.h>
+#include <SD.h>
+
+Servo myservo;  // create servo object to control a servo
+// twelve servo objects can be created on most boards
+
+
+#define Manual_Mode 8 //defines an Digital input to determine mode. 
+#define Auto_Mode 9 //defines an Digital input to determine mode.
+
+#define Alrm_Light 9 //defines an Digital input to indicate Errors.
+
+#define Analog_Input A0 //defines an Analog input to determine position of POT.
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET     4 // Reset pin # 
+#define SCREEN_ADDRESS 0x3D ///< See datasheet for Address; 0x3D for 128x64, 
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+const int chipSelect = 10;
+
+int pos = 0;    // variable to store the servo position
+int sensorValue = 0;  // variable to store the value coming from the sensor
+int RawSensorValue = 0;  // variable to store the value coming from the sensor
+
+
+void setup() 
+{
+  // put your setup code here, to run once:
+  Serial.begin(9600); //init the serial communication
+
+  //Define intput/outputs  
+  pinMode(Alrm_Light, OUTPUT); 
+  pinMode(Manual_Mode, INPUT);
+  pinMode(Auto_Mode, INPUT);
+
+  //init Servo. Attach and write value 
+  Servo_init();
+
+  //init SD. Attach and write value 
+  SD_init();
+
+  //init OLED. Attach and write value
+  OLED_init();
+
+
+
+  //init mememory card
+  // check for errors.
+  //init temp sensors
+  //check for errors
+  //init pwm outputs/my servo. 
+  //check for errors
+
+
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+
+}
+
+void Motor_control()
+{
+
+  int pos = 0;    // variable to store the servo position
+  int sensorValue = 0;  // variable to store the value coming from the sensor
+  int RawSensorValue = 0;  // variable to store the value coming from the sensor
+
+  RawSensorValue = analogRead(Analog_Input);
+  Serial.print(RawSensorValue);
+  Serial.print(" , ");
+  sensorValue = map(RawSensorValue, 0, 1023, 95, 160);
+  Serial.println(sensorValue);
+  delay(50);
+  myservo.write(sensorValue);
+  //delay(50);
+}
+void Servo_init()
+{
+  Serial.println("Setting motor 0 value");
+  myservo.attach(6);  // attaches the servo on pin 6 to the servo object, this is for the pwm for the motor controller.
+  myservo.write(95); // give the servo a positive value so that motor controller doesn't go negitive.
+  delay(100);
+  Serial.println("Done.");
+}
+void SD_init()
+{
+  Serial.print("Initializing SD card...");
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) 
+  {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    while (1)
+    {
+      // Don't proceed, loop forever
+      digitalWrite(Alrm_Light, HIGH);
+      delay(2000);
+      digitalWrite(Alrm_Light, LOW);
+      delay(2000);
+    }
+  }
+  Serial.println("card initialized.");
+  delay(100);
+  Serial.println("Done.");
+}
+void OLED_init()
+{
+  //if OLED doesn't init, then display eror. 
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) 
+  {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;)
+    {
+      // Don't proceed, loop forever
+      digitalWrite(Alrm_Light, HIGH);
+      delay(2000);
+      digitalWrite(Alrm_Light, LOW);
+      delay(2000);
+    }  
+  // Clear the buffer
+  display.clearDisplay();// pretty sure this hits the screen reset, or screen init 
+  }
+}
