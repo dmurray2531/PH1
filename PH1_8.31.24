@@ -1,0 +1,423 @@
+/**************************************************************************
+ This is code for the pool heater. 
+
+ This pool heater is designed to have copper tubing going through a hot fire.
+ Temperature inputs for the water inlet, and exiting water temp going into the
+ pool. 
+ a motor PWM motor controller that changes the speed of a 12v pump. 
+ and a pot for manual control
+
+ by Dillan Murray
+ 7.16.24
+
+
+ **************************************************************************/
+#include <SPI.h>
+#include <Wire.h>
+//#include <Adafruit_GFX.h>
+//#include <Adafruit_SSD1306.h>
+#include <Servo.h>
+#include <SD.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <PID_v1.h>
+
+// Data wire is conntec to the Arduino digital pin 2
+#define ONE_WIRE_BUS 2
+// Setup a oneWire instance to communicate with any OneWire devices
+OneWire oneWire(ONE_WIRE_BUS);
+// Pass our oneWire reference to Dallas Temperature sensor 
+DallasTemperature sensors(&oneWire);
+// arrays to hold device address
+DeviceAddress InLetTemp1, OutLetTemp1, OutLetTemp2;
+
+#define ServoPin 3 //Servo pin (motor controller)
+
+#define Alrm_Light 5 //defines an Digital input to indicate Errors.
+
+#define Manual_Mode 8 //defines an Digital input to determine mode. 
+#define Auto_Mode 9 //defines an Digital input to determine mode.
+
+#define Analog_Input A0 //defines an Analog input to determine position of POT.
+
+const byte MAXTEMP = 90; //Unchanging Max temp used for alarms 
+
+byte FlagSet = 0; //flag for writing mode selector once
+
+double Setpoint, TempInputForPID, PumpOutForID;  //Perameter for PID in AUTO Mode
+double Kp=3, Ki=0.5, Kd=3;
+PID myPID(&TempInputForPID, &PumpOutForID, &Setpoint, Kp, Ki, Kd, DIRECT);
+
+/*
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET     4 // Reset pin # 
+#define SCREEN_ADDRESS 0x3D ///< See datasheet for Address; 0x3D for 128x64, 
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+*/
+
+Servo myservo;  // create servo object to control a servo
+
+//this is for the SD card, talks to chip
+const int chipSelect = 10;
+
+
+void setup() 
+{
+  // put your setup code here, to run once:
+  Serial.begin(9600); //init the serial communication
+  Serial.println("");
+  Serial.println("Starting");
+
+  //Define intput/outputs  
+  pinMode(Alrm_Light, OUTPUT); 
+  ALRM_Light_Test(); //blink the alarm LED
+
+  pinMode(Manual_Mode, INPUT);
+  pinMode(Auto_Mode, INPUT);
+
+  //init Servo. Attach and write value
+  Serial.println("Motor init"); 
+  Servo_init();
+
+  //init SD. Attach and write value 
+  //SD_init();
+
+  PID_Init();
+
+  //request the temperature seonsr
+  sensors.begin();
+  TempSensor_init();
+
+  //init OLED. Attach and write value
+  //OLED_init();
+
+  //clear the buffer
+  //display.clearDisplay();
+
+
+  //init mememory card
+  // check for errors.
+  //init temp sensors
+  //check for errors
+  //init pwm outputs/my servo. 
+  //check for errors
+
+Serial.println("INIT complete");
+Serial.println("");
+delay(1000);
+
+}
+
+void loop() 
+{
+  // put your main code here, to run repeatedly:
+  
+  if(digitalRead(Manual_Mode)==HIGH)
+  {
+    /*manual mode
+    display 
+      read inlet temperature
+      read outlet temperature
+      display inlet, out1 and out 2temp
+      read A-INPUT
+      control motor via pot angle
+        if temerature on output is <100 slow down pump
+        if temperature on output is >100 speed up pump
+    */
+    if(FlagSet != 1)
+    {
+      Serial.println("Manual Mode");
+      FlagSet = 1; 
+    }
+    sensors.requestTemperatures();
+    if(DallasTemperature::toFahrenheit(getTempSensorData(InLetTemp1)) >= MAXTEMP || 
+        DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp1)) >= MAXTEMP ||
+        DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp2)) >= MAXTEMP)
+    {
+      Serial.print("HIGH TEMP");
+      Serial.print(":");
+      Serial.print(DallasTemperature::toFahrenheit(getTempSensorData(InLetTemp1)));
+      Serial.print(",");
+      Serial.print(DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp1)));
+      Serial.print(",");
+      Serial.println(DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp2)));
+
+      IN_ALRM(1);
+      myservo.write(160); 
+    
+    }
+      else
+    {
+
+      Manual_Motor_control();
+
+      Serial.print("Motor Speed: ");
+      Serial.print(Manual_Motor_control());
+      Serial.print(",");
+
+      Serial.print("Input F:");
+      Serial.print(DallasTemperature::toFahrenheit(getTempSensorData(InLetTemp1)));
+      Serial.print(",");
+
+      Serial.print("Output F:");
+      Serial.print(DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp1)));
+      Serial.print(",");
+
+      Serial.print("Output F:");
+      Serial.print(DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp2)));
+      Serial.println("");
+    }    
+  }
+  else if(digitalRead(Auto_Mode)==HIGH)
+  {
+    /*if switch is up (8/9)
+    auto mode
+      read inlet temperature
+      read outlet temperature
+      display inlet, out1 and out 2temp on screen
+      write to sd card
+        temp inlet, outlet, pump speed in percentge, mode
+      control motor
+        if temerature on output is <100 slow down pump
+        if temperature on output is >100 speed up pump
+      Write do some math to figure pump speed as percentage. 
+    */
+    if(FlagSet != 1)
+    {
+      Serial.println("Auto Mode");
+      FlagSet = 1; 
+    }   
+    sensors.requestTemperatures();
+    Auto_Motor_control(DallasTemperature::toFahrenheit(getTempSensorData(InLetTemp1)),
+                  DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp1)),
+                  DallasTemperature::toFahrenheit(getTempSensorData(OutLetTemp2))
+                  );
+    
+
+  }
+  else
+  {
+    myservo.write(95); //turn off the pump
+    if(FlagSet != 1)
+    {
+      Serial.println("No mode sleected");      
+      FlagSet = 1; 
+    }      
+    IN_ALRM(3);
+    FlagSet = 0;
+  }
+}
+
+int Manual_Motor_control()
+{
+
+  int pos = 0;    // variable to store the servo position
+  int MotorPWMOutput = 0;  // variable to store the value coming from the sensor
+  int RawSensorValue = 0;  // variable to store the value coming from the sensor should be from 0 1023
+  int MotorSpeed =0; 
+
+  RawSensorValue = analogRead(Analog_Input);
+  //Serial.print(RawSensorValue);
+  //Serial.print(" , ");
+  MotorPWMOutput = map(RawSensorValue, 0, 1023, 95, 160);
+  MotorSpeed = map(MotorPWMOutput, 95, 160, 0, 100);
+  
+  delay(50);
+  myservo.write(MotorPWMOutput);
+
+  return MotorSpeed;
+}
+void Servo_init()
+{
+  
+  Serial.println("Setting motor 0 value");
+  myservo.attach(ServoPin);  // attaches the servo on pin 3 to the servo object, this is for the pwm for the motor controller.
+  myservo.write(95); // give the servo a positive value so that motor controller doesn't go negitive.
+  delay(100); //give time to set value
+  Serial.println("Set Motor Value...Done.");
+}
+
+
+float getTempSensorData(DeviceAddress deviceAddress)
+{
+  float tempC = sensors.getTempC(deviceAddress);
+  if(tempC == DEVICE_DISCONNECTED_C) 
+  {
+    Serial.println("Error: Could not read temperature data");
+    IN_ALRM(1);
+    return;
+  }  
+  if(tempC >= MAXTEMP)
+  {
+    Serial.println("HIGH TEMP");
+    IN_ALRM(1);
+  }
+  return tempC; 
+}
+
+
+void SD_init()
+{
+  Serial.print("Initializing SD card...");
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) 
+  {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    while (1)
+    {
+      // Don't proceed, loop forever
+      Serial.println("Please add SD card and restart Arduino");
+      IN_ALRM(3);
+    }
+  }
+  Serial.println("Card Initialized.");
+  delay(100);
+}
+/*void OLED_init()
+{
+  //if OLED doesn't init, then display eror.
+  Serial.println("Initializing OLED..."); 
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) 
+  {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;)
+    {
+      // Don't proceed, loop forever
+      IN_ALRM();
+    }  
+  // Clear the buffer
+  display.clearDisplay();// pretty sure this hits the screen reset, or screen init 
+  }
+}*/
+void TempSensor_init()
+{
+
+  #define TEMPERATURE_PRECISION 9
+  // section to intit the temperature sensor
+  //sensors.begin();
+  Serial.print("Locating devices...");
+  Serial.print("Found ");
+  Serial.print(sensors.getDeviceCount(), DEC);
+  Serial.println(" devices.");
+
+  if (!sensors.getAddress(InLetTemp1, 0)) Serial.println("Unable to find address for Device 0");
+  if (!sensors.getAddress(OutLetTemp1, 1)) Serial.println("Unable to find address for Device 1");
+  if (!sensors.getAddress(OutLetTemp2, 2)) Serial.println("Unable to find address for Device 2");
+
+  sensors.setResolution(InLetTemp1, TEMPERATURE_PRECISION);
+  sensors.setResolution(OutLetTemp1, TEMPERATURE_PRECISION);
+  sensors.setResolution(OutLetTemp2, TEMPERATURE_PRECISION);
+
+  Serial.println("sensor set up complete");
+  
+}
+void ALRM_Light_Test()
+{
+  // section to test light
+  digitalWrite(Alrm_Light, HIGH);
+  delay(500);
+  digitalWrite(Alrm_Light, LOW);
+  delay(50);
+  Serial.println("Alarm light test...Done");
+}
+void IN_ALRM(byte AlarmPriority)
+{
+  // section to test light
+  switch (AlarmPriority)
+  {
+    case 1:
+      digitalWrite(Alrm_Light, HIGH);
+      delay(100);
+      digitalWrite(Alrm_Light, LOW);
+      delay(100);
+    break;
+
+    case 2:
+      digitalWrite(Alrm_Light, HIGH);
+      delay(500);
+      digitalWrite(Alrm_Light, LOW);
+      delay(2000);
+    break;
+
+    case 3:
+      digitalWrite(Alrm_Light, HIGH);
+      delay(2000);
+      digitalWrite(Alrm_Light, LOW);
+      delay(2000);
+    break;
+
+    default:
+      digitalWrite(Alrm_Light, LOW);
+      delay(25);
+    break;
+  }
+}
+
+int Auto_Motor_control(float TempIN,float TempOUT1,float TempOUT2)
+{
+  //check motor temp
+  // throtle vales basses on temp
+  //PID control? 
+  //TempInputForPID, &PumpOutForID, &Setpoint,
+  int MotorPWMOutput = 0;  // variable to store the value coming from the sensor
+  int MotorSpeed =0; 
+
+  if(TempIN >= MAXTEMP || TempOUT1 >= MAXTEMP ||TempOUT2 >= MAXTEMP)
+  {
+    Serial.print("HIGH TEMP");
+    Serial.print(":");
+    Serial.print(TempOUT1);
+    Serial.print(",");
+    Serial.println(TempOUT2);
+
+    IN_ALRM(1);
+    myservo.write(160); 
+    
+  }
+  else
+  { 
+ 
+  Setpoint = 85; //desired water temp on outlet tube
+  TempInputForPID = (TempOUT1+TempOUT2)/2;
+  myPID.Compute();
+
+  MotorPWMOutput = map(PumpOutForID, 0, 255, 160, 95);
+  MotorSpeed = map(MotorPWMOutput, 95, 160, 0, 100);
+  
+  delay(50);
+  myservo.write(MotorPWMOutput);
+
+  Serial.print("TempINPUT,");
+  Serial.print(TempIN);
+  Serial.print(", ");
+  Serial.print("TempOUTPUT1,");
+  Serial.print(TempOUT1);
+  Serial.print(", ");
+  Serial.print("TempOUTPUT2,");
+  Serial.print(TempOUT2);
+  Serial.print(", ");
+  Serial.print("TempInputForPID,");
+  Serial.print(TempInputForPID);
+  Serial.print(", ");  
+  Serial.print("PID Output,");
+  Serial.print(PumpOutForID);
+  Serial.print(", ");
+  Serial.print("motorWriteValue,");
+  Serial.print(MotorPWMOutput);
+  Serial.println("");
+  
+
+  return MotorSpeed;
+  }
+  //Serial.print(RawSensorValue);
+  //Serial.print(" , ");
+}
+
+void PID_Init()
+{
+  myPID.SetMode(AUTOMATIC);
+  Serial.print("PID mode: ");
+  Serial.println("Automatic");
+}
